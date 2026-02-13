@@ -1,73 +1,182 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 import shap
 
-from core.data_processor import detect_problem_type, split_features_target
 from core.model_trainer import train_model
 from core.shap_engine import compute_shap
+from core.shap_engine import prepare_shap_for_plot
 from core.insight_engine import InsightEngine
-from core.evaluation_engine import stability_analysis
 from core.bias_detector import detect_class_imbalance
-from report.report_generator import generate_report
+from core.evaluation_engine import stability_analysis
 
 st.set_page_config(layout="wide")
 st.title("🔥 Unified Explainable Analytics Framework")
 
-uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+uploaded_file = st.file_uploader("Upload CSV Dataset", type=["csv"])
 
 if uploaded_file:
 
     df = pd.read_csv(uploaded_file)
+    st.subheader("Dataset Preview")
     st.dataframe(df.head())
 
     target_col = st.selectbox("Select Target Column", df.columns)
 
     if target_col:
 
-        X, y = split_features_target(df, target_col)
-        problem_type = detect_problem_type(y)
+        X = df.drop(columns=[target_col])
+        X = X.select_dtypes(include=np.number)
+        y = df[target_col]
 
-        model, X_train, X_test, y_test, metrics = train_model(X, y, problem_type)
+        if X.shape[1] == 0:
+            st.error("No numeric feature columns detected.")
+            st.stop()
 
-        st.subheader("📊 Metrics")
+        # ===============================
+        # TRAIN MODEL
+        # ===============================
+        model, X_train, X_test, y_train, y_test, metrics, problem_type = train_model(X, y)
+
+        st.success(f"Detected Problem Type: {problem_type}")
+
+        st.subheader("📊 Model Metrics")
         st.write(metrics)
 
+        # ===============================
+        # INSIGHT ENGINE
+        # ===============================
         engine = InsightEngine()
-
         model_insight = engine.model_insight(problem_type, metrics)
+
         st.subheader("🧠 Model Insight")
         st.info(model_insight)
 
-        # SHAP
-        st.subheader("🔬 SHAP Explanation")
-        shap_values, X_explain = compute_shap(model, X_train, X_test)
-
-        fig = plt.figure()
-        shap.plots.beeswarm(shap_values, show=False)
-        st.pyplot(fig)
-
-        shap_summary = engine.shap_insight(shap_values, X.columns)
-
-        # Stability
-        stability = stability_analysis(model, X, y, problem_type)
-
-        # Bias
+        # ===============================
+        # BIAS CHECK (classification only)
+        # ===============================
         if problem_type == "classification":
-            bias_note = detect_class_imbalance(y)
-            st.warning(bias_note)
+            imbalance_note = detect_class_imbalance(y)
+            st.warning(imbalance_note)
 
-        # Report
-        report = generate_report(
-            problem_type,
-            metrics,
-            model_insight,
-            shap_summary,
-            stability
-        )
+        # ===============================
+        # STABILITY ANALYSIS
+        # ===============================
+        stability = stability_analysis(model, X_train, y_train, problem_type)
+        st.subheader("📈 Stability Analysis")
+        st.write(f"Model score standard deviation across runs: {stability:.4f}")
 
-        st.subheader("📄 Full Structured Report")
-        st.code(report)
+        # ===============================
+        # SHAP EXPLANATION
+        # ===============================
+        st.subheader("🔬 SHAP Global Explanation")
+
+        try:
+            shap_values, X_explain = compute_shap(model, X_train, X_test)
+
+            # Handle multi-class safely
+            if len(shap_values.values.shape) == 3:
+
+                class_labels = model.classes_
+
+                selected_class = st.selectbox(
+                    "Select class for SHAP explanation",
+                    range(len(class_labels)),
+                    format_func=lambda x: f"Class {class_labels[x]}"
+                )
+
+                shap_values = prepare_shap_for_plot(
+                    shap_values,
+                    class_index=selected_class
+                )
+
+            else:
+                shap_values = prepare_shap_for_plot(shap_values)
+
+            fig = plt.figure()
+            shap.plots.beeswarm(shap_values, show=False)
+            st.pyplot(fig)
+
+            shap_summary = engine.shap_insight(shap_values, X.columns)
+
+            st.subheader("📌 SHAP Insight")
+            st.success(shap_summary)
+
+        except Exception as e:
+            st.error(f"SHAP explanation failed: {e}")
+
+
+# import streamlit as st
+# import pandas as pd
+# import matplotlib.pyplot as plt
+# import shap
+
+# from core.data_processor import detect_problem_type, split_features_target
+# from core.model_trainer import train_model
+# from core.shap_engine import compute_shap
+# from core.insight_engine import InsightEngine
+# from core.evaluation_engine import stability_analysis
+# from core.bias_detector import detect_class_imbalance
+# from report.report_generator import generate_report
+
+# st.set_page_config(layout="wide")
+# st.title("🔥 Unified Explainable Analytics Framework")
+
+# uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+
+# if uploaded_file:
+
+#     df = pd.read_csv(uploaded_file)
+#     st.dataframe(df.head())
+
+#     target_col = st.selectbox("Select Target Column", df.columns)
+
+#     if target_col:
+
+#         X, y = split_features_target(df, target_col)
+#         problem_type = detect_problem_type(y)
+
+#         model, X_train, X_test, y_test, metrics = train_model(X, y, problem_type)
+
+#         st.subheader("📊 Metrics")
+#         st.write(metrics)
+
+#         engine = InsightEngine()
+
+#         model_insight = engine.model_insight(problem_type, metrics)
+#         st.subheader("🧠 Model Insight")
+#         st.info(model_insight)
+
+#         # SHAP
+#         st.subheader("🔬 SHAP Explanation")
+#         shap_values, X_explain = compute_shap(model, X_train, X_test)
+
+#         fig = plt.figure()
+#         shap.plots.beeswarm(shap_values, show=False)
+#         st.pyplot(fig)
+
+#         shap_summary = engine.shap_insight(shap_values, X.columns)
+
+#         # Stability
+#         stability = stability_analysis(model, X, y, problem_type)
+
+#         # Bias
+#         if problem_type == "classification":
+#             bias_note = detect_class_imbalance(y)
+#             st.warning(bias_note)
+
+#         # Report
+#         report = generate_report(
+#             problem_type,
+#             metrics,
+#             model_insight,
+#             shap_summary,
+#             stability
+#         )
+
+#         st.subheader("📄 Full Structured Report")
+#         st.code(report)
 
 
 # import streamlit as st
