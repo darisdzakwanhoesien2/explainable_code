@@ -1,126 +1,198 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
 import shap
 
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-
-from explain.insight_engine import InsightEngine
-from explain.clustering_explainer import run_clustering
-from explain.model_explainer import (
-    train_classification_model,
-    compute_shap_values
-)
+from core.data_processor import detect_problem_type, split_features_target
+from core.model_trainer import train_model
+from core.shap_engine import compute_shap
+from core.insight_engine import InsightEngine
+from core.evaluation_engine import stability_analysis
+from core.bias_detector import detect_class_imbalance
+from report.report_generator import generate_report
 
 st.set_page_config(layout="wide")
-st.title("🔍 Explainable Analytics Dashboard")
-
-engine = InsightEngine()
+st.title("🔥 Unified Explainable Analytics Framework")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 if uploaded_file:
 
     df = pd.read_csv(uploaded_file)
-    st.write("### Dataset Preview")
     st.dataframe(df.head())
 
-    numeric_df = df.select_dtypes(include=np.number)
+    target_col = st.selectbox("Select Target Column", df.columns)
 
-    tab1, tab2 = st.tabs(["📊 Clustering", "🤖 Classification"])
+    if target_col:
 
-    # =============================
-    # CLUSTERING
-    # =============================
-    with tab1:
+        X, y = split_features_target(df, target_col)
+        problem_type = detect_problem_type(y)
 
-        st.header("KMeans Clustering")
+        model, X_train, X_test, y_test, metrics = train_model(X, y, problem_type)
 
-        if len(numeric_df.columns) < 2:
-            st.warning("Need at least 2 numeric columns for clustering.")
-        else:
+        st.subheader("📊 Metrics")
+        st.write(metrics)
 
-            k = st.slider("Number of clusters", 2, 10, 3)
+        engine = InsightEngine()
 
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(numeric_df)
+        model_insight = engine.model_insight(problem_type, metrics)
+        st.subheader("🧠 Model Insight")
+        st.info(model_insight)
 
-            model, labels, sil, sizes = run_clustering(X_scaled, k)
+        # SHAP
+        st.subheader("🔬 SHAP Explanation")
+        shap_values, X_explain = compute_shap(model, X_train, X_test)
 
-            fig, ax = plt.subplots()
-            ax.scatter(X_scaled[:, 0], X_scaled[:, 1], c=labels)
-            st.pyplot(fig)
+        fig = plt.figure()
+        shap.plots.beeswarm(shap_values, show=False)
+        st.pyplot(fig)
 
-            st.subheader("🧠 Explanation Report")
+        shap_summary = engine.shap_insight(shap_values, X.columns)
 
-            report = engine.clustering_insight(sil, sizes)
+        # Stability
+        stability = stability_analysis(model, X, y, problem_type)
 
-            st.info(report["summary"])
-            st.warning(report["distribution"])
-            st.success(report["suggestion"])
+        # Bias
+        if problem_type == "classification":
+            bias_note = detect_class_imbalance(y)
+            st.warning(bias_note)
 
-            st.write(f"Silhouette Score: {sil:.3f}")
-            st.write(f"Cluster Sizes: {sizes}")
+        # Report
+        report = generate_report(
+            problem_type,
+            metrics,
+            model_insight,
+            shap_summary,
+            stability
+        )
 
-    # =============================
-    # CLASSIFICATION
-    # =============================
-    with tab2:
+        st.subheader("📄 Full Structured Report")
+        st.code(report)
 
-        st.header("RandomForest Classification + SHAP")
 
-        target_col = st.selectbox("Select Target Column", df.columns)
+# import streamlit as st
+# import pandas as pd
+# import numpy as np
+# import matplotlib.pyplot as plt
+# import shap
 
-        if target_col:
+# from sklearn.model_selection import train_test_split
+# from sklearn.preprocessing import StandardScaler
 
-            X = df.drop(columns=[target_col])
-            X = X.select_dtypes(include=np.number)
-            y = df[target_col]
+# from explain.insight_engine import InsightEngine
+# from explain.clustering_explainer import run_clustering
+# from explain.model_explainer import (
+#     train_classification_model,
+#     compute_shap_values
+# )
 
-            if X.shape[1] == 0:
-                st.error("No numeric features available.")
-            else:
+# st.set_page_config(layout="wide")
+# st.title("🔍 Explainable Analytics Dashboard")
 
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X, y, test_size=0.2, random_state=42
-                )
+# engine = InsightEngine()
 
-                model, acc, f1 = train_classification_model(
-                    X_train, X_test, y_train, y_test
-                )
+# uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
-                st.write("### Model Performance")
-                st.write(f"Accuracy: {acc:.3f}")
-                st.write(f"F1 Score: {f1:.3f}")
+# if uploaded_file:
 
-                report = engine.classification_insight(acc, f1)
+#     df = pd.read_csv(uploaded_file)
+#     st.write("### Dataset Preview")
+#     st.dataframe(df.head())
 
-                st.subheader("🧠 Insight Report")
-                st.info(report["summary"])
-                st.warning(report["risk"])
-                st.success(report["confidence"])
+#     numeric_df = df.select_dtypes(include=np.number)
 
-                # =============================
-                # SHAP (FIXED VERSION)
-                # =============================
+#     tab1, tab2 = st.tabs(["📊 Clustering", "🤖 Classification"])
 
-                st.subheader("🔬 SHAP Global Explanation")
+#     # =============================
+#     # CLUSTERING
+#     # =============================
+#     with tab1:
 
-                try:
-                    shap_values = compute_shap_values(
-                        model,
-                        X_train,
-                        X_test
-                    )
+#         st.header("KMeans Clustering")
 
-                    fig2 = plt.figure()
-                    shap.plots.beeswarm(shap_values, show=False)
-                    st.pyplot(fig2)
+#         if len(numeric_df.columns) < 2:
+#             st.warning("Need at least 2 numeric columns for clustering.")
+#         else:
 
-                except Exception as e:
-                    st.error(f"SHAP failed: {e}")
+#             k = st.slider("Number of clusters", 2, 10, 3)
+
+#             scaler = StandardScaler()
+#             X_scaled = scaler.fit_transform(numeric_df)
+
+#             model, labels, sil, sizes = run_clustering(X_scaled, k)
+
+#             fig, ax = plt.subplots()
+#             ax.scatter(X_scaled[:, 0], X_scaled[:, 1], c=labels)
+#             st.pyplot(fig)
+
+#             st.subheader("🧠 Explanation Report")
+
+#             report = engine.clustering_insight(sil, sizes)
+
+#             st.info(report["summary"])
+#             st.warning(report["distribution"])
+#             st.success(report["suggestion"])
+
+#             st.write(f"Silhouette Score: {sil:.3f}")
+#             st.write(f"Cluster Sizes: {sizes}")
+
+#     # =============================
+#     # CLASSIFICATION
+#     # =============================
+#     with tab2:
+
+#         st.header("RandomForest Classification + SHAP")
+
+#         target_col = st.selectbox("Select Target Column", df.columns)
+
+#         if target_col:
+
+#             X = df.drop(columns=[target_col])
+#             X = X.select_dtypes(include=np.number)
+#             y = df[target_col]
+
+#             if X.shape[1] == 0:
+#                 st.error("No numeric features available.")
+#             else:
+
+#                 X_train, X_test, y_train, y_test = train_test_split(
+#                     X, y, test_size=0.2, random_state=42
+#                 )
+
+#                 model, acc, f1 = train_classification_model(
+#                     X_train, X_test, y_train, y_test
+#                 )
+
+#                 st.write("### Model Performance")
+#                 st.write(f"Accuracy: {acc:.3f}")
+#                 st.write(f"F1 Score: {f1:.3f}")
+
+#                 report = engine.classification_insight(acc, f1)
+
+#                 st.subheader("🧠 Insight Report")
+#                 st.info(report["summary"])
+#                 st.warning(report["risk"])
+#                 st.success(report["confidence"])
+
+#                 # =============================
+#                 # SHAP (FIXED VERSION)
+#                 # =============================
+
+#                 st.subheader("🔬 SHAP Global Explanation")
+
+#                 try:
+#                     shap_values = compute_shap_values(
+#                         model,
+#                         X_train,
+#                         X_test
+#                     )
+
+#                     fig2 = plt.figure()
+#                     shap.plots.beeswarm(shap_values, show=False)
+#                     st.pyplot(fig2)
+
+#                 except Exception as e:
+#                     st.error(f"SHAP failed: {e}")
 
 
 # import streamlit as st
