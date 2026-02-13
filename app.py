@@ -3,117 +3,129 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import shap
+import uuid
+from sklearn.preprocessing import KBinsDiscretizer
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.linear_model import LogisticRegression, LinearRegression
+from sklearn.metrics import accuracy_score, f1_score, r2_score
+from sklearn.model_selection import train_test_split
 
-from core.model_trainer import train_model, detect_problem_type
 from core.shap_engine import (
     create_explainer,
     compute_shap_values,
     prepare_shap_for_plot
 )
 from core.insight_engine import InsightEngine
-from core.bias_detector import detect_class_imbalance
-from core.evaluation_engine import stability_analysis
 
-
-# =====================================================
-# PAGE CONFIG
-# =====================================================
 
 st.set_page_config(layout="wide")
-st.title("🔥 Unified Explainable Analytics Framework")
-
+st.title("🔥 Advanced Explainable AI Platform")
 
 # =====================================================
-# FORCE RECOMPUTE BUTTON
+# EXPERIMENT TRACKING
 # =====================================================
 
-if st.button("🔄 Force Recompute Everything"):
-    st.cache_data.clear()
-    st.cache_resource.clear()
-    st.success("All cached computations cleared.")
+if "experiments" not in st.session_state:
+    st.session_state.experiments = []
 
+experiment_id = str(uuid.uuid4())[:8]
+st.write(f"Experiment ID: {experiment_id}")
 
 # =====================================================
 # FILE UPLOAD
 # =====================================================
 
-uploaded_file = st.file_uploader("Upload CSV Dataset", type=["csv"])
+uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
 if uploaded_file:
 
     df = pd.read_csv(uploaded_file)
 
-    st.subheader("📂 Dataset Preview")
-    st.dataframe(df.head())
+    st.subheader("📊 Data Profiling")
 
-    target_col = st.selectbox("Select Target Column", df.columns)
+    st.write("Shape:", df.shape)
+    st.write("Missing values:")
+    st.write(df.isna().sum())
+    st.write("Summary statistics:")
+    st.write(df.describe())
+
+    target_col = st.selectbox("Select Target", df.columns)
 
     if target_col:
 
-        X = df.drop(columns=[target_col])
-        X = X.select_dtypes(include="number")
+        X = df.drop(columns=[target_col]).select_dtypes(include="number")
         y = df[target_col]
 
-        if X.shape[1] == 0:
-            st.error("No numeric feature columns detected.")
-            st.stop()
-
         # =====================================================
-        # PROBLEM TYPE DETECTION + OVERRIDE
+        # AUTO BINNING OPTION
         # =====================================================
 
-        auto_type = detect_problem_type(y)
+        if np.issubdtype(y.dtype, np.number):
 
-        override = st.selectbox(
-            "Problem Type",
-            ["Auto Detect", "Classification", "Regression"]
+            if st.checkbox("Convert regression target to classification (binning)"):
+
+                bins = st.slider("Number of bins", 2, 10, 3)
+
+                discretizer = KBinsDiscretizer(
+                    n_bins=bins,
+                    encode="ordinal",
+                    strategy="quantile"
+                )
+
+                y = discretizer.fit_transform(y.values.reshape(-1, 1)).flatten()
+                y = y.astype(int)
+
+                st.success("Target converted to categorical bins.")
+
+        # =====================================================
+        # MODEL SELECTION
+        # =====================================================
+
+        problem_type = "classification" if len(np.unique(y)) < 20 else "regression"
+
+        model_option = st.selectbox(
+            "Model",
+            ["Auto Select", "Random Forest", "Logistic/Linear"]
         )
 
-        if override == "Auto Detect":
-            problem_type = auto_type
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+
+        if model_option == "Auto Select":
+            model = RandomForestClassifier() if problem_type == "classification" else RandomForestRegressor()
+
+        elif model_option == "Random Forest":
+            model = RandomForestClassifier() if problem_type == "classification" else RandomForestRegressor()
+
         else:
-            problem_type = override.lower()
+            model = LogisticRegression(max_iter=2000) if problem_type == "classification" else LinearRegression()
 
-        st.info(f"Detected / Selected Problem Type: {problem_type}")
+        model.fit(X_train, y_train)
 
-        # =====================================================
-        # TRAIN MODEL (CACHED)
-        # =====================================================
-
-        model, X_train, X_test, y_train, y_test, metrics, detected_type = train_model(X, y)
-
-        st.subheader("📊 Model Metrics")
-        st.write(metrics)
+        preds = model.predict(X_test)
 
         # =====================================================
-        # MODEL INSIGHT
-        # =====================================================
-
-        engine = InsightEngine()
-        model_insight = engine.model_insight(problem_type, metrics)
-
-        st.subheader("🧠 Model Insight")
-        st.success(model_insight)
-
-        # =====================================================
-        # BIAS CHECK (CLASSIFICATION ONLY)
+        # METRICS
         # =====================================================
 
         if problem_type == "classification":
-            imbalance_note = detect_class_imbalance(y)
-            st.warning(imbalance_note)
+            acc = accuracy_score(y_test, preds)
+            f1 = f1_score(y_test, preds, average="weighted")
+            st.write({"accuracy": acc, "f1": f1})
+        else:
+            r2 = r2_score(y_test, preds)
+            st.write({"r2": r2})
+
+        # Save experiment
+        st.session_state.experiments.append({
+            "id": experiment_id,
+            "model": type(model).__name__,
+            "problem_type": problem_type
+        })
 
         # =====================================================
-        # STABILITY ANALYSIS
-        # =====================================================
-
-        stability = stability_analysis(model, X_train, y_train, problem_type)
-
-        st.subheader("📈 Stability Analysis")
-        st.write(f"Model score standard deviation across runs: {stability:.4f}")
-
-        # =====================================================
-        # SHAP EXPLANATION
+        # SHAP GLOBAL
         # =====================================================
 
         st.subheader("🔬 SHAP Global Explanation")
@@ -122,81 +134,269 @@ if uploaded_file:
 
         try:
             explainer = create_explainer(model, X_train)
-
             shap_values, X_explain = compute_shap_values(
                 explainer,
                 X_test,
                 sample_size
             )
 
-            # -------------------------------
-            # MULTI-CLASS HANDLING
-            # -------------------------------
             if len(shap_values.values.shape) == 3:
-
-                class_labels = model.classes_
-
-                selected_class = st.selectbox(
-                    "Select class for SHAP explanation",
-                    range(len(class_labels)),
-                    format_func=lambda x: f"Class {class_labels[x]}"
-                )
-
-                shap_values = prepare_shap_for_plot(
-                    shap_values,
-                    class_index=selected_class
-                )
-
-            else:
                 shap_values = prepare_shap_for_plot(shap_values)
 
-            # -------------------------------
-            # BEESWARM PLOT
-            # -------------------------------
             fig = plt.figure()
             shap.plots.beeswarm(shap_values, show=False)
             st.pyplot(fig)
-
-            shap_summary = engine.shap_insight(shap_values, X.columns)
-
-            st.subheader("📌 SHAP Insight")
-            st.info(shap_summary)
 
         except Exception as e:
             st.error(f"SHAP explanation failed: {e}")
 
         # =====================================================
-        # LOCAL EXPLANATION (OPTIONAL)
+        # FEATURE INTERACTION
+        # =====================================================
+
+        st.subheader("🔗 Feature Interaction")
+
+        try:
+            fig2 = plt.figure()
+            shap.plots.scatter(shap_values[:, 0], show=False)
+            st.pyplot(fig2)
+        except:
+            st.info("Feature interaction not available for this model.")
+
+        # =====================================================
+        # LOCAL EXPLANATION
         # =====================================================
 
         st.subheader("🔍 Local Explanation")
 
-        if len(X_test) > 0:
+        idx = st.slider("Select instance", 0, len(X_test) - 1, 0)
 
-            index = st.slider(
-                "Select instance index",
-                0,
-                len(X_test) - 1,
-                0
+        try:
+            local_explainer = create_explainer(model, X_train)
+            local_shap, _ = compute_shap_values(
+                local_explainer,
+                X_test.iloc[[idx]],
+                1
             )
 
-            try:
-                local_explainer = create_explainer(model, X_train)
-                local_shap_values, local_X = compute_shap_values(
-                    local_explainer,
-                    X_test.iloc[[index]],
-                    sample_size=1
-                )
+            if len(local_shap.values.shape) == 3:
+                local_shap = prepare_shap_for_plot(local_shap)
 
-                if len(local_shap_values.values.shape) == 3:
-                    local_shap_values = prepare_shap_for_plot(local_shap_values)
+            fig3 = plt.figure()
+            shap.plots.waterfall(local_shap[0], show=False)
+            st.pyplot(fig3)
 
-                fig2 = plt.figure()
-                shap.plots.waterfall(local_shap_values[0], show=False)
-                st.pyplot(fig2)
+        except Exception as e:
+            st.error(f"Local SHAP failed: {e}")
 
-            except Exception as e:
-                st.error(f"Local SHAP failed: {e}")
+# =====================================================
+# EXPERIMENT HISTORY
+# =====================================================
+
+if st.session_state.experiments:
+    st.subheader("🧪 Experiment History")
+    st.write(st.session_state.experiments)
+
+
+# import streamlit as st
+# import pandas as pd
+# import numpy as np
+# import matplotlib.pyplot as plt
+# import shap
+
+# from core.model_trainer import train_model, detect_problem_type
+# from core.shap_engine import (
+#     create_explainer,
+#     compute_shap_values,
+#     prepare_shap_for_plot
+# )
+# from core.insight_engine import InsightEngine
+# from core.bias_detector import detect_class_imbalance
+# from core.evaluation_engine import stability_analysis
+
+
+# # =====================================================
+# # PAGE CONFIG
+# # =====================================================
+
+# st.set_page_config(layout="wide")
+# st.title("🔥 Unified Explainable Analytics Framework")
+
+
+# # =====================================================
+# # FORCE RECOMPUTE BUTTON
+# # =====================================================
+
+# if st.button("🔄 Force Recompute Everything"):
+#     st.cache_data.clear()
+#     st.cache_resource.clear()
+#     st.success("All cached computations cleared.")
+
+
+# # =====================================================
+# # FILE UPLOAD
+# # =====================================================
+
+# uploaded_file = st.file_uploader("Upload CSV Dataset", type=["csv"])
+
+# if uploaded_file:
+
+#     df = pd.read_csv(uploaded_file)
+
+#     st.subheader("📂 Dataset Preview")
+#     st.dataframe(df.head())
+
+#     target_col = st.selectbox("Select Target Column", df.columns)
+
+#     if target_col:
+
+#         X = df.drop(columns=[target_col])
+#         X = X.select_dtypes(include="number")
+#         y = df[target_col]
+
+#         if X.shape[1] == 0:
+#             st.error("No numeric feature columns detected.")
+#             st.stop()
+
+#         # =====================================================
+#         # PROBLEM TYPE DETECTION + OVERRIDE
+#         # =====================================================
+
+#         auto_type = detect_problem_type(y)
+
+#         override = st.selectbox(
+#             "Problem Type",
+#             ["Auto Detect", "Classification", "Regression"]
+#         )
+
+#         if override == "Auto Detect":
+#             problem_type = auto_type
+#         else:
+#             problem_type = override.lower()
+
+#         st.info(f"Detected / Selected Problem Type: {problem_type}")
+
+#         # =====================================================
+#         # TRAIN MODEL (CACHED)
+#         # =====================================================
+
+#         model, X_train, X_test, y_train, y_test, metrics, detected_type = train_model(X, y)
+
+#         st.subheader("📊 Model Metrics")
+#         st.write(metrics)
+
+#         # =====================================================
+#         # MODEL INSIGHT
+#         # =====================================================
+
+#         engine = InsightEngine()
+#         model_insight = engine.model_insight(problem_type, metrics)
+
+#         st.subheader("🧠 Model Insight")
+#         st.success(model_insight)
+
+#         # =====================================================
+#         # BIAS CHECK (CLASSIFICATION ONLY)
+#         # =====================================================
+
+#         if problem_type == "classification":
+#             imbalance_note = detect_class_imbalance(y)
+#             st.warning(imbalance_note)
+
+#         # =====================================================
+#         # STABILITY ANALYSIS
+#         # =====================================================
+
+#         stability = stability_analysis(model, X_train, y_train, problem_type)
+
+#         st.subheader("📈 Stability Analysis")
+#         st.write(f"Model score standard deviation across runs: {stability:.4f}")
+
+#         # =====================================================
+#         # SHAP EXPLANATION
+#         # =====================================================
+
+#         st.subheader("🔬 SHAP Global Explanation")
+
+#         sample_size = st.slider("SHAP sample size", 50, 500, 200)
+
+#         try:
+#             explainer = create_explainer(model, X_train)
+
+#             shap_values, X_explain = compute_shap_values(
+#                 explainer,
+#                 X_test,
+#                 sample_size
+#             )
+
+#             # -------------------------------
+#             # MULTI-CLASS HANDLING
+#             # -------------------------------
+#             if len(shap_values.values.shape) == 3:
+
+#                 class_labels = model.classes_
+
+#                 selected_class = st.selectbox(
+#                     "Select class for SHAP explanation",
+#                     range(len(class_labels)),
+#                     format_func=lambda x: f"Class {class_labels[x]}"
+#                 )
+
+#                 shap_values = prepare_shap_for_plot(
+#                     shap_values,
+#                     class_index=selected_class
+#                 )
+
+#             else:
+#                 shap_values = prepare_shap_for_plot(shap_values)
+
+#             # -------------------------------
+#             # BEESWARM PLOT
+#             # -------------------------------
+#             fig = plt.figure()
+#             shap.plots.beeswarm(shap_values, show=False)
+#             st.pyplot(fig)
+
+#             shap_summary = engine.shap_insight(shap_values, X.columns)
+
+#             st.subheader("📌 SHAP Insight")
+#             st.info(shap_summary)
+
+#         except Exception as e:
+#             st.error(f"SHAP explanation failed: {e}")
+
+#         # =====================================================
+#         # LOCAL EXPLANATION (OPTIONAL)
+#         # =====================================================
+
+#         st.subheader("🔍 Local Explanation")
+
+#         if len(X_test) > 0:
+
+#             index = st.slider(
+#                 "Select instance index",
+#                 0,
+#                 len(X_test) - 1,
+#                 0
+#             )
+
+#             try:
+#                 local_explainer = create_explainer(model, X_train)
+#                 local_shap_values, local_X = compute_shap_values(
+#                     local_explainer,
+#                     X_test.iloc[[index]],
+#                     sample_size=1
+#                 )
+
+#                 if len(local_shap_values.values.shape) == 3:
+#                     local_shap_values = prepare_shap_for_plot(local_shap_values)
+
+#                 fig2 = plt.figure()
+#                 shap.plots.waterfall(local_shap_values[0], show=False)
+#                 st.pyplot(fig2)
+
+#             except Exception as e:
+#                 st.error(f"Local SHAP failed: {e}")
 
 
 # import streamlit as st
