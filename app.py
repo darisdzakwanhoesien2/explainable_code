@@ -1,9 +1,12 @@
+# https://chatgpt.com/c/698e8032-0a14-8320-918b-b2fedd186f4b
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import shap
 import uuid
+import os
 from sklearn.preprocessing import KBinsDiscretizer
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import LogisticRegression, LinearRegression
@@ -15,31 +18,45 @@ from core.shap_engine import (
     compute_shap_values,
     prepare_shap_for_plot
 )
+from core.storage_engine import (
+    init_storage,
+    save_dataset,
+    save_experiment
+)
 from core.insight_engine import InsightEngine
 
+
+# =====================================================
+# INIT
+# =====================================================
 
 st.set_page_config(layout="wide")
 st.title("🔥 Advanced Explainable AI Platform")
 
-# =====================================================
-# EXPERIMENT TRACKING
-# =====================================================
+init_storage()
 
-if "experiments" not in st.session_state:
-    st.session_state.experiments = []
+if st.button("🔄 Force Recompute Everything"):
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    st.success("Cache cleared successfully.")
 
-experiment_id = str(uuid.uuid4())[:8]
-st.write(f"Experiment ID: {experiment_id}")
 
 # =====================================================
 # FILE UPLOAD
 # =====================================================
 
-uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+uploaded_file = st.file_uploader("Upload CSV Dataset", type=["csv"])
 
 if uploaded_file:
 
+    experiment_id = str(uuid.uuid4())[:8]
+    st.write(f"🧪 Experiment ID: {experiment_id}")
+
     df = pd.read_csv(uploaded_file)
+
+    # =====================================================
+    # DATA PROFILING
+    # =====================================================
 
     st.subheader("📊 Data Profiling")
 
@@ -49,15 +66,19 @@ if uploaded_file:
     st.write("Summary statistics:")
     st.write(df.describe())
 
-    target_col = st.selectbox("Select Target", df.columns)
+    target_col = st.selectbox("Select Target Column", df.columns)
 
     if target_col:
 
         X = df.drop(columns=[target_col]).select_dtypes(include="number")
         y = df[target_col]
 
+        if X.shape[1] == 0:
+            st.error("No numeric feature columns detected.")
+            st.stop()
+
         # =====================================================
-        # AUTO BINNING OPTION
+        # AUTO BINNING
         # =====================================================
 
         if np.issubdtype(y.dtype, np.number):
@@ -72,20 +93,29 @@ if uploaded_file:
                     strategy="quantile"
                 )
 
-                y = discretizer.fit_transform(y.values.reshape(-1, 1)).flatten()
+                y = discretizer.fit_transform(
+                    y.values.reshape(-1, 1)
+                ).flatten()
+
                 y = y.astype(int)
 
-                st.success("Target converted to categorical bins.")
+                st.success("Target converted into categorical bins.")
+
+        # =====================================================
+        # PROBLEM TYPE
+        # =====================================================
+
+        problem_type = "classification" if len(np.unique(y)) < 20 else "regression"
+
+        st.info(f"Detected Problem Type: {problem_type}")
 
         # =====================================================
         # MODEL SELECTION
         # =====================================================
 
-        problem_type = "classification" if len(np.unique(y)) < 20 else "regression"
-
         model_option = st.selectbox(
-            "Model",
-            ["Auto Select", "Random Forest", "Logistic/Linear"]
+            "Select Model",
+            ["Auto Select", "Random Forest", "Linear/Logistic"]
         )
 
         X_train, X_test, y_train, y_test = train_test_split(
@@ -93,16 +123,27 @@ if uploaded_file:
         )
 
         if model_option == "Auto Select":
-            model = RandomForestClassifier() if problem_type == "classification" else RandomForestRegressor()
+            model = (
+                RandomForestClassifier(n_estimators=200)
+                if problem_type == "classification"
+                else RandomForestRegressor(n_estimators=200)
+            )
 
         elif model_option == "Random Forest":
-            model = RandomForestClassifier() if problem_type == "classification" else RandomForestRegressor()
+            model = (
+                RandomForestClassifier(n_estimators=200)
+                if problem_type == "classification"
+                else RandomForestRegressor(n_estimators=200)
+            )
 
         else:
-            model = LogisticRegression(max_iter=2000) if problem_type == "classification" else LinearRegression()
+            model = (
+                LogisticRegression(max_iter=2000)
+                if problem_type == "classification"
+                else LinearRegression()
+            )
 
         model.fit(X_train, y_train)
-
         preds = model.predict(X_test)
 
         # =====================================================
@@ -110,19 +151,17 @@ if uploaded_file:
         # =====================================================
 
         if problem_type == "classification":
-            acc = accuracy_score(y_test, preds)
-            f1 = f1_score(y_test, preds, average="weighted")
-            st.write({"accuracy": acc, "f1": f1})
+            metrics = {
+                "accuracy": accuracy_score(y_test, preds),
+                "f1": f1_score(y_test, preds, average="weighted")
+            }
         else:
-            r2 = r2_score(y_test, preds)
-            st.write({"r2": r2})
+            metrics = {
+                "r2": r2_score(y_test, preds)
+            }
 
-        # Save experiment
-        st.session_state.experiments.append({
-            "id": experiment_id,
-            "model": type(model).__name__,
-            "problem_type": problem_type
-        })
+        st.subheader("📈 Model Metrics")
+        st.write(metrics)
 
         # =====================================================
         # SHAP GLOBAL
@@ -147,8 +186,15 @@ if uploaded_file:
             shap.plots.beeswarm(shap_values, show=False)
             st.pyplot(fig)
 
+            engine = InsightEngine()
+            shap_summary = engine.shap_insight(shap_values, X.columns)
+
+            st.subheader("📌 SHAP Insight")
+            st.success(shap_summary)
+
         except Exception as e:
             st.error(f"SHAP explanation failed: {e}")
+            shap_summary = "SHAP failed"
 
         # =====================================================
         # FEATURE INTERACTION
@@ -161,7 +207,7 @@ if uploaded_file:
             shap.plots.scatter(shap_values[:, 0], show=False)
             st.pyplot(fig2)
         except:
-            st.info("Feature interaction not available for this model.")
+            st.info("Interaction plot not available.")
 
         # =====================================================
         # LOCAL EXPLANATION
@@ -169,33 +215,263 @@ if uploaded_file:
 
         st.subheader("🔍 Local Explanation")
 
-        idx = st.slider("Select instance", 0, len(X_test) - 1, 0)
+        if len(X_test) > 0:
 
-        try:
-            local_explainer = create_explainer(model, X_train)
-            local_shap, _ = compute_shap_values(
-                local_explainer,
-                X_test.iloc[[idx]],
-                1
+            idx = st.slider("Select instance", 0, len(X_test) - 1, 0)
+
+            try:
+                local_explainer = create_explainer(model, X_train)
+                local_shap, _ = compute_shap_values(
+                    local_explainer,
+                    X_test.iloc[[idx]],
+                    1
+                )
+
+                if len(local_shap.values.shape) == 3:
+                    local_shap = prepare_shap_for_plot(local_shap)
+
+                fig3 = plt.figure()
+                shap.plots.waterfall(local_shap[0], show=False)
+                st.pyplot(fig3)
+
+            except Exception as e:
+                st.error(f"Local SHAP failed: {e}")
+
+        # =====================================================
+        # SAVE EXPERIMENT
+        # =====================================================
+
+        if st.button("💾 Save Experiment"):
+
+            save_dataset(df, experiment_id)
+
+            config = {
+                "model": type(model).__name__,
+                "problem_type": problem_type,
+                "target_column": target_col,
+                "shap_sample_size": sample_size
+            }
+
+            exp_path = save_experiment(
+                experiment_id,
+                metrics,
+                config,
+                shap_summary
             )
 
-            if len(local_shap.values.shape) == 3:
-                local_shap = prepare_shap_for_plot(local_shap)
+            st.success(f"Experiment saved at: {exp_path}")
 
-            fig3 = plt.figure()
-            shap.plots.waterfall(local_shap[0], show=False)
-            st.pyplot(fig3)
+            report_path = os.path.join(exp_path, "report.txt")
 
-        except Exception as e:
-            st.error(f"Local SHAP failed: {e}")
+            with open(report_path, "r") as f:
+                report_content = f.read()
 
-# =====================================================
-# EXPERIMENT HISTORY
-# =====================================================
+            st.download_button(
+                label="⬇ Download Report",
+                data=report_content,
+                file_name=f"{experiment_id}_report.txt",
+                mime="text/plain"
+            )
 
-if st.session_state.experiments:
-    st.subheader("🧪 Experiment History")
-    st.write(st.session_state.experiments)
+
+# import streamlit as st
+# import pandas as pd
+# import numpy as np
+# import matplotlib.pyplot as plt
+# import shap
+# import uuid
+# from sklearn.preprocessing import KBinsDiscretizer
+# from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+# from sklearn.linear_model import LogisticRegression, LinearRegression
+# from sklearn.metrics import accuracy_score, f1_score, r2_score
+# from sklearn.model_selection import train_test_split
+
+# from core.shap_engine import (
+#     create_explainer,
+#     compute_shap_values,
+#     prepare_shap_for_plot
+# )
+# from core.insight_engine import InsightEngine
+
+
+# st.set_page_config(layout="wide")
+# st.title("🔥 Advanced Explainable AI Platform")
+
+# # =====================================================
+# # EXPERIMENT TRACKING
+# # =====================================================
+
+# if "experiments" not in st.session_state:
+#     st.session_state.experiments = []
+
+# experiment_id = str(uuid.uuid4())[:8]
+# st.write(f"Experiment ID: {experiment_id}")
+
+# # =====================================================
+# # FILE UPLOAD
+# # =====================================================
+
+# uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+
+# if uploaded_file:
+
+#     df = pd.read_csv(uploaded_file)
+
+#     st.subheader("📊 Data Profiling")
+
+#     st.write("Shape:", df.shape)
+#     st.write("Missing values:")
+#     st.write(df.isna().sum())
+#     st.write("Summary statistics:")
+#     st.write(df.describe())
+
+#     target_col = st.selectbox("Select Target", df.columns)
+
+#     if target_col:
+
+#         X = df.drop(columns=[target_col]).select_dtypes(include="number")
+#         y = df[target_col]
+
+#         # =====================================================
+#         # AUTO BINNING OPTION
+#         # =====================================================
+
+#         if np.issubdtype(y.dtype, np.number):
+
+#             if st.checkbox("Convert regression target to classification (binning)"):
+
+#                 bins = st.slider("Number of bins", 2, 10, 3)
+
+#                 discretizer = KBinsDiscretizer(
+#                     n_bins=bins,
+#                     encode="ordinal",
+#                     strategy="quantile"
+#                 )
+
+#                 y = discretizer.fit_transform(y.values.reshape(-1, 1)).flatten()
+#                 y = y.astype(int)
+
+#                 st.success("Target converted to categorical bins.")
+
+#         # =====================================================
+#         # MODEL SELECTION
+#         # =====================================================
+
+#         problem_type = "classification" if len(np.unique(y)) < 20 else "regression"
+
+#         model_option = st.selectbox(
+#             "Model",
+#             ["Auto Select", "Random Forest", "Logistic/Linear"]
+#         )
+
+#         X_train, X_test, y_train, y_test = train_test_split(
+#             X, y, test_size=0.2, random_state=42
+#         )
+
+#         if model_option == "Auto Select":
+#             model = RandomForestClassifier() if problem_type == "classification" else RandomForestRegressor()
+
+#         elif model_option == "Random Forest":
+#             model = RandomForestClassifier() if problem_type == "classification" else RandomForestRegressor()
+
+#         else:
+#             model = LogisticRegression(max_iter=2000) if problem_type == "classification" else LinearRegression()
+
+#         model.fit(X_train, y_train)
+
+#         preds = model.predict(X_test)
+
+#         # =====================================================
+#         # METRICS
+#         # =====================================================
+
+#         if problem_type == "classification":
+#             acc = accuracy_score(y_test, preds)
+#             f1 = f1_score(y_test, preds, average="weighted")
+#             st.write({"accuracy": acc, "f1": f1})
+#         else:
+#             r2 = r2_score(y_test, preds)
+#             st.write({"r2": r2})
+
+#         # Save experiment
+#         st.session_state.experiments.append({
+#             "id": experiment_id,
+#             "model": type(model).__name__,
+#             "problem_type": problem_type
+#         })
+
+#         # =====================================================
+#         # SHAP GLOBAL
+#         # =====================================================
+
+#         st.subheader("🔬 SHAP Global Explanation")
+
+#         sample_size = st.slider("SHAP sample size", 50, 500, 200)
+
+#         try:
+#             explainer = create_explainer(model, X_train)
+#             shap_values, X_explain = compute_shap_values(
+#                 explainer,
+#                 X_test,
+#                 sample_size
+#             )
+
+#             if len(shap_values.values.shape) == 3:
+#                 shap_values = prepare_shap_for_plot(shap_values)
+
+#             fig = plt.figure()
+#             shap.plots.beeswarm(shap_values, show=False)
+#             st.pyplot(fig)
+
+#         except Exception as e:
+#             st.error(f"SHAP explanation failed: {e}")
+
+#         # =====================================================
+#         # FEATURE INTERACTION
+#         # =====================================================
+
+#         st.subheader("🔗 Feature Interaction")
+
+#         try:
+#             fig2 = plt.figure()
+#             shap.plots.scatter(shap_values[:, 0], show=False)
+#             st.pyplot(fig2)
+#         except:
+#             st.info("Feature interaction not available for this model.")
+
+#         # =====================================================
+#         # LOCAL EXPLANATION
+#         # =====================================================
+
+#         st.subheader("🔍 Local Explanation")
+
+#         idx = st.slider("Select instance", 0, len(X_test) - 1, 0)
+
+#         try:
+#             local_explainer = create_explainer(model, X_train)
+#             local_shap, _ = compute_shap_values(
+#                 local_explainer,
+#                 X_test.iloc[[idx]],
+#                 1
+#             )
+
+#             if len(local_shap.values.shape) == 3:
+#                 local_shap = prepare_shap_for_plot(local_shap)
+
+#             fig3 = plt.figure()
+#             shap.plots.waterfall(local_shap[0], show=False)
+#             st.pyplot(fig3)
+
+#         except Exception as e:
+#             st.error(f"Local SHAP failed: {e}")
+
+# # =====================================================
+# # EXPERIMENT HISTORY
+# # =====================================================
+
+# if st.session_state.experiments:
+#     st.subheader("🧪 Experiment History")
+#     st.write(st.session_state.experiments)
 
 
 # import streamlit as st
